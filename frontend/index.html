@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ChartLab Demo - Quotex Chart Monitor & Strategy Evaluator</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <header class="app-header">
+        <div class="header-left">
+            <div class="logo">
+                <span class="logo-icon">📊</span>
+                <span class="logo-title">ChartLab <small class="demo-tag">Demo</small></span>
+            </div>
+            <div class="badges-container">
+                <span id="badge-mode" class="badge badge-mock">Checking Mode...</span>
+                <span class="badge badge-unvalidated">Unvalidated Strategy (Evaluation Only)</span>
+                <span id="badge-status" class="badge badge-status badge-idle">Status: Idle</span>
+            </div>
+        </div>
+        <div class="header-right">
+            <div class="clock-display" title="All user-facing times displayed in Indian Standard Time (IST)">
+                <span class="clock-icon">🕒</span>
+                <span id="ist-clock">--:--:-- IST</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Prominent Safety & Architecture Disclaimer Banner -->
+    <div class="disclaimer-banner">
+        <strong>⚠️ OPERATIONAL SAFEGUARD & PROTOCOL NOTICE:</strong>
+        This software is a passive browser screen-sharing monitor for evaluating strategy repeatability on demo charts.
+        It <u>never</u> asks for passwords or cookies, <u>cannot</u> execute trades, and does <u>not</u> access Quotex private APIs.
+        Periodic screenshot analysis is <strong>not</strong> a tick-by-tick market feed nor synchronized candle-close capture.
+        No automated strategy guarantees win rates or profitability.
+    </div>
+
+    <!-- Hidden Tab Visibility Warning Banner -->
+    <div id="visibility-pause-banner" class="visibility-banner hidden">
+        <span>⏸️ <strong>Monitoring Paused:</strong> Browser tab was hidden or minimized. Automatic captures were halted to prevent stale or out-of-sync evaluation.</span>
+        <button id="btn-resume-monitoring" class="btn btn-warning btn-sm">Resume Monitoring</button>
+    </div>
+
+    <!-- Source Dimension Change Notification Banner -->
+    <div id="dimension-change-banner" class="visibility-banner banner-alert hidden">
+        <span>⚠️ <strong>Window Resized:</strong> Capture resolution changed. Please verify or re-adjust your chart crop area.</span>
+        <button id="btn-dismiss-dim-alert" class="btn btn-secondary btn-sm">Acknowledge</button>
+    </div>
+
+    <main class="dashboard-grid">
+        <!-- LEFT COLUMN: Controls & Screen Capture Area -->
+        <section class="panel control-panel">
+            <div class="panel-header">
+                <h2>1. Stream & Crop Configuration</h2>
+            </div>
+            <div class="panel-body">
+                <div class="form-row grid-2">
+                    <div class="form-group">
+                        <label for="input-asset">Asset / Instrument:</label>
+                        <input type="text" id="input-asset" value="EUR/USD OTC" placeholder="e.g. EUR/USD OTC, GBP/JPY">
+                    </div>
+                    <div class="form-group">
+                        <label for="input-timeframe">Candle Timeframe:</label>
+                        <select id="input-timeframe">
+                            <option value="5s">5 Seconds</option>
+                            <option value="15s">15 Seconds</option>
+                            <option value="30s">30 Seconds</option>
+                            <option value="1m" selected>1 Minute</option>
+                            <option value="2m">2 Minutes</option>
+                            <option value="5m">5 Minutes</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-row grid-2">
+                    <div class="form-group">
+                        <label for="input-interval">Analysis Interval (Seconds):</label>
+                        <input type="number" id="input-interval" value="60" min="15" max="300" step="5">
+                        <small class="hint">Periodic capture interval (default 60s)</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="input-observation-duration">Demo Observation Duration:</label>
+                        <select id="input-observation-duration">
+                            <option value="1m" selected>1 Minute</option>
+                            <option value="2m">2 Minutes</option>
+                            <option value="3m">3 Minutes</option>
+                            <option value="5m">5 Minutes</option>
+                        </select>
+                        <small class="hint">Evaluation timeframe, not optimal expiry</small>
+                    </div>
+                </div>
+
+                <div class="action-buttons">
+                    <button id="btn-share-chart" class="btn btn-primary">
+                        <span class="btn-icon">📺</span> Share Chart
+                    </button>
+                    <button id="btn-start-monitoring" class="btn btn-success" disabled>
+                        <span class="btn-icon">▶</span> Start Monitoring
+                    </button>
+                    <button id="btn-stop-monitoring" class="btn btn-warning" disabled>
+                        <span class="btn-icon">⏹</span> Stop Monitoring
+                    </button>
+                    <button id="btn-end-sharing" class="btn btn-danger" disabled>
+                        <span class="btn-icon">✖</span> End Sharing
+                    </button>
+                </div>
+
+                <!-- Video Preview & Crop Canvas -->
+                <div class="video-container" id="video-wrapper">
+                    <div class="video-placeholder" id="video-placeholder">
+                        <p>Click <strong>"Share Chart"</strong> and select your Quotex browser tab or window to start live preview.</p>
+                        <p class="sub-text">Screenshots are kept in memory and never uploaded until you click "Start Monitoring".</p>
+                    </div>
+                    <video id="live-video" autoplay playsinline muted class="hidden"></video>
+                    <canvas id="crop-canvas" class="crop-overlay hidden"></canvas>
+                </div>
+
+                <div class="crop-toolbar">
+                    <div class="crop-coords">
+                        <span>Crop Rect: <strong id="crop-info">Full Screen</strong></span>
+                    </div>
+                    <div class="crop-actions">
+                        <button id="btn-reset-crop" class="btn btn-secondary btn-sm" disabled>Reset Crop</button>
+                    </div>
+                </div>
+
+                <div class="crop-preview-box">
+                    <span class="crop-preview-title">Transmission Preview (Only this cropped area is analyzed):</span>
+                    <div class="crop-thumb-wrap">
+                        <canvas id="preview-thumbnail" width="320" height="180"></canvas>
+                    </div>
+                    <small class="privacy-note">
+                        🔒 Privacy: When live analysis is enabled, only this cropped canvas is sent via backend to OpenAI.
+                        Credentials are never exposed to browser storage.
+                    </small>
+                </div>
+            </div>
+        </section>
+
+        <!-- RIGHT COLUMN: Latest Assessment & Manual Trade Logging -->
+        <section class="panel assessment-panel">
+            <div class="panel-header">
+                <h2>2. Latest AI Chart Assessment</h2>
+                <span id="assessment-stale-tag" class="badge badge-stale hidden">⚠️ STALE RESPONSE</span>
+            </div>
+            <div class="panel-body">
+                <div id="assessment-card" class="assessment-card-empty">
+                    <p class="empty-state-text">No chart assessment yet. Start monitoring to receive periodic evaluations.</p>
+                </div>
+
+                <!-- Dynamic Assessment Content Populated via JS -->
+                <div id="assessment-details" class="assessment-details hidden">
+                    <div class="signal-header">
+                        <div class="signal-badge-wrap">
+                            <span id="signal-direction" class="direction-badge direction-wait">WAIT</span>
+                        </div>
+                        <div class="signal-meta">
+                            <div><strong>Asset:</strong> <span id="meta-asset">--</span></div>
+                            <div><strong>Timeframe:</strong> <span id="meta-timeframe">--</span></div>
+                            <div><strong>Quality:</strong> <span id="meta-quality">--</span></div>
+                            <div><strong>Trend:</strong> <span id="meta-trend">--</span></div>
+                            <div><strong>Captured (IST):</strong> <span id="meta-time-ist">--</span></div>
+                            <div><strong>Screenshot Age:</strong> <span id="meta-age">--</span></div>
+                        </div>
+                    </div>
+
+                    <div class="assessment-section">
+                        <h4>Identified Patterns</h4>
+                        <div id="patterns-list" class="patterns-container">None detected.</div>
+                    </div>
+
+                    <div class="assessment-section">
+                        <h4>Support & Resistance</h4>
+                        <div id="sr-details" class="sr-box">No distinct levels detected.</div>
+                    </div>
+
+                    <div class="assessment-section">
+                        <h4>Analytical Reasoning</h4>
+                        <p id="assessment-reasoning" class="reasoning-text">--</p>
+                    </div>
+
+                    <div class="assessment-section conditions-grid">
+                        <div class="condition-box entry">
+                            <h5>Required Entry Condition</h5>
+                            <p id="assessment-entry">None / Wait for confirmation.</p>
+                        </div>
+                        <div class="condition-box invalidation">
+                            <h5>Invalidation Condition</h5>
+                            <p id="assessment-invalidation">None specified.</p>
+                        </div>
+                    </div>
+
+                    <div class="assessment-section limitations-box">
+                        <h5>Observed Limitations & Uncertainty</h5>
+                        <p id="assessment-limitations">--</p>
+                    </div>
+
+                    <div class="log-trade-prompt">
+                        <button id="btn-open-log-trade" class="btn btn-outline-primary btn-block">
+                            📝 Record Quotex Demo Trade For This Assessment
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Inline Manual Demo Trade Logging Form -->
+                <div id="trade-log-form-container" class="trade-logger-card hidden">
+                    <div class="logger-header">
+                        <h3>Record Platform Demo Trade</h3>
+                        <button id="btn-close-logger" class="close-btn">&times;</button>
+                    </div>
+                    <p class="logger-note">
+                        Scoring relies strictly on your actual platform outcome. Do not assume an assessment became a trade,
+                        and do not assume trades followed entry conditions.
+                    </p>
+                    <form id="trade-form">
+                        <div class="form-row grid-2">
+                            <div class="form-group">
+                                <label for="trade-direction">Trade Direction:</label>
+                                <select id="trade-direction">
+                                    <option value="UP">UP (Call)</option>
+                                    <option value="DOWN">DOWN (Put)</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="trade-was-entered">Entered Trade?</label>
+                                <select id="trade-was-entered">
+                                    <option value="true" selected>Yes, Entered on Demo</option>
+                                    <option value="false">No, Skipped / Pass</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="form-row grid-3">
+                            <div class="form-group">
+                                <label for="trade-entry-price">Entry Price:</label>
+                                <input type="number" id="trade-entry-price" step="0.00001" placeholder="e.g. 1.08450">
+                            </div>
+                            <div class="form-group">
+                                <label for="trade-stake">Demo Stake ($):</label>
+                                <input type="number" id="trade-stake" value="10.0" min="1" step="1">
+                            </div>
+                            <div class="form-group">
+                                <label for="trade-settlement">Settlement ($):</label>
+                                <input type="number" id="trade-settlement" value="18.5" step="0.01">
+                            </div>
+                        </div>
+
+                        <div class="form-row grid-2">
+                            <div class="form-group">
+                                <label for="trade-outcome">Platform Outcome:</label>
+                                <select id="trade-outcome">
+                                    <option value="WIN">WIN (Profit realized)</option>
+                                    <option value="LOSS">LOSS (Full stake loss)</option>
+                                    <option value="DRAW">DRAW (Stake returned)</option>
+                                    <option value="SKIPPED">SKIPPED</option>
+                                    <option value="UNRESOLVED" selected>UNRESOLVED (Pending)</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="trade-notes">Deviations / Execution Notes:</label>
+                                <input type="text" id="trade-notes" placeholder="e.g. Entered 3s late, slippage">
+                            </div>
+                        </div>
+
+                        <div class="form-actions">
+                            <button type="submit" class="btn btn-success btn-block">Save Demo Trade Record</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- BOTTOM SECTION: Comprehensive Performance Reporting -->
+    <section class="performance-section panel">
+        <div class="panel-header flex-between">
+            <div class="header-titles">
+                <h2>3. Strategy Evaluation & Performance Statistics</h2>
+                <small class="section-subtitle">Forward testing tracking & sample significance</small>
+            </div>
+            <div class="metrics-controls">
+                <label class="toggle-wrap">
+                    <input type="checkbox" id="toggle-include-mock">
+                    <span class="toggle-label">Include Mock Data</span>
+                </label>
+                <button id="btn-export-trades-csv" class="btn btn-secondary btn-sm">Export Trades CSV</button>
+                <button id="btn-export-assessments-csv" class="btn btn-secondary btn-sm">Export Assessments CSV</button>
+            </div>
+        </div>
+        <div class="panel-body">
+            <!-- Insufficient evidence alert badge -->
+            <div id="insufficient-evidence-alert" class="alert-box alert-warning">
+                <strong>Sample Size Notice:</strong>
+                <span id="evidence-message">Awaiting trades...</span>
+            </div>
+
+            <!-- Validation disclaimer banner -->
+            <div class="stats-disclaimer">
+                📌 <em>Statistical Rule:</em> Excludes WAIT, SKIPPED, MOCK, STALE, and UNRESOLVED records from the decisive win-rate calculation.
+                Draws are reported separately. 95% Wilson confidence intervals assume independent trials and may be optimistic for correlated candles.
+            </div>
+
+            <!-- Metrics Cards Grid -->
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <span class="metric-title">Decisive Win Rate</span>
+                    <span class="metric-value" id="stat-win-rate">0.0%</span>
+                    <span class="metric-sub" id="stat-win-rate-desc">0 Wins / 0 Decisive</span>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-title">95% Wilson CI (Approx)</span>
+                    <span class="metric-value font-mono" id="stat-wilson-ci">[0.0% - 0.0%]</span>
+                    <span class="metric-sub">Binomial confidence bounds</span>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-title">Net Demo PnL</span>
+                    <span class="metric-value" id="stat-net-pnl">$0.00</span>
+                    <span class="metric-sub">Recorded cashflows</span>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-title">Max Drawdown</span>
+                    <span class="metric-value text-danger" id="stat-max-dd">$0.00</span>
+                    <span class="metric-sub">Peak-to-trough drop</span>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-title">Longest Loss Streak</span>
+                    <span class="metric-value text-danger" id="stat-loss-streak">0</span>
+                    <span class="metric-sub">Consecutive losses</span>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-title">Scored Records</span>
+                    <span class="metric-value" id="stat-counts">W: 0 | L: 0 | D: 0</span>
+                    <span class="metric-sub" id="stat-exclusions">Skipped: 0 | Unresolved: 0</span>
+                </div>
+            </div>
+
+            <!-- History Tabs -->
+            <div class="history-tabs">
+                <button class="tab-btn active" data-tab="tab-trades">Recorded Demo Trades</button>
+                <button class="tab-btn" data-tab="tab-assessments">Issued Assessments</button>
+            </div>
+
+            <div id="tab-trades" class="tab-content active">
+                <div class="table-responsive">
+                    <table class="data-table" id="table-trades">
+                        <thead>
+                            <tr>
+                                <th>Time (IST)</th>
+                                <th>Asset</th>
+                                <th>Dir</th>
+                                <th>Stake</th>
+                                <th>Settlement</th>
+                                <th>PnL</th>
+                                <th>Outcome</th>
+                                <th>Notes / Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tbody-trades">
+                            <tr><td colspan="8" class="text-center">No trades recorded yet.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div id="tab-assessments" class="tab-content">
+                <div class="table-responsive">
+                    <table class="data-table" id="table-assessments">
+                        <thead>
+                            <tr>
+                                <th>Captured (IST)</th>
+                                <th>Asset</th>
+                                <th>TF</th>
+                                <th>Direction</th>
+                                <th>Quality</th>
+                                <th>Trend</th>
+                                <th>Age (s)</th>
+                                <th>Model</th>
+                                <th>Reasoning Summary</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tbody-assessments">
+                            <tr><td colspan="9" class="text-center">No assessments generated yet.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Modal for Quick Updating Trade Outcome -->
+    <div id="modal-update-trade" class="modal-overlay hidden">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3>Update Trade Outcome</h3>
+                <button id="btn-close-modal" class="close-btn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="modal-trade-id">
+                <div class="form-group">
+                    <label for="modal-outcome">Platform Outcome:</label>
+                    <select id="modal-outcome">
+                        <option value="WIN">WIN</option>
+                        <option value="LOSS">LOSS</option>
+                        <option value="DRAW">DRAW</option>
+                        <option value="SKIPPED">SKIPPED</option>
+                        <option value="UNRESOLVED">UNRESOLVED</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="modal-settlement">Settlement Amount ($):</label>
+                    <input type="number" id="modal-settlement" step="0.01" value="0.00">
+                </div>
+                <div class="form-group">
+                    <label for="modal-notes">Notes:</label>
+                    <input type="text" id="modal-notes" placeholder="Execution notes or observations">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="btn-save-modal-trade" class="btn btn-primary">Save Outcome</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
+
