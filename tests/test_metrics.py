@@ -4,6 +4,7 @@ from backend.metrics import (
     calculate_drawdown_and_streaks,
     calculate_performance_report
 )
+from backend.analyzer import build_prediction_snapshot
 
 def test_payout_and_pnl_calculation():
     """Verify that payouts and PnL correctly handle wins, losses, and draws."""
@@ -147,4 +148,22 @@ def test_separation_of_mock_and_real_data():
     assert mock_rep["losses"] == 1
     assert mock_rep["decisive_trades_count"] == 4
     assert mock_rep["win_rate_percent"] == 75.0
+
+
+def test_screenshot_prediction_snapshot_uses_pattern_and_horizon():
+    """The forecast should use detected candlestick structure and the selected expiry horizon."""
+    snapshot = build_prediction_snapshot(
+        asset="EUR/USD",
+        timeframe="1m",
+        direction="UP",
+        patterns=["Hammer / Pin Bar", "Ascending Triangle"],
+        trade_horizon="2m",
+        current_time="2026-09-26 10:32:00"
+    )
+
+    assert snapshot["predicted_direction"] == "UP"
+    assert snapshot["trade_horizon"] == "2m"
+    assert "5-minute" in snapshot["next_5_min_outlook"].lower()
+    assert snapshot["confidence_score"] >= 0.5
+    assert "backtest" in snapshot["backtest_summary"].lower()
 

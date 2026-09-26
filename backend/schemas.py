@@ -64,6 +64,14 @@ class AIChartAnalysis(BaseModel):
     limitations: str = Field(
         description="Missing context, OTC noise, absence of volume, or visual ambiguity"
     )
+    currency_pair: Optional[str] = Field(default=None, description="Asset or pair extracted from the chart screenshot context")
+    chart_time: Optional[str] = Field(default=None, description="Current market/capture time on the screenshot")
+    candle_pattern: Optional[str] = Field(default=None, description="Detected candle structure or pattern summary")
+    trade_horizon: str = Field(default="1m", description="Preferred trade horizon for the next 5-minute forecast: 1m or 2m")
+    predicted_direction: Optional[DirectionEnum] = Field(default=None, description="Next 5-minute forecast direction")
+    confidence_score: float = Field(default=0.0, description="Confidence score for the forecast between 0 and 1")
+    next_5_min_outlook: Optional[str] = Field(default=None, description="Human-readable next 5-minute market outlook")
+    backtest_summary: Optional[str] = Field(default=None, description="Short backtest summary for similar candle pattern outcomes")
 
 # -----------------------------------------------------------------------------
 # API Request / Response Schemas
@@ -74,6 +82,7 @@ class AnalyzeRequest(BaseModel):
     asset: str = Field(default="EUR/USD", description="Asset or market pair name")
     timeframe: str = Field(default="1m", description="Candle timeframe e.g. 5s, 1m, 5m")
     observation_duration: str = Field(default="1m", description="Selected demo observation duration")
+    trade_horizon: str = Field(default="1m", description="Preferred trade horizon for the next 5-minute forecast (1m or 2m)")
     capture_timestamp: str = Field(description="ISO 8601 UTC timestamp of client capture")
     session_id: str = Field(description="Unique identifier for the current capture session")
 

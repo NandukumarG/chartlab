@@ -12,6 +12,8 @@
         videoTrack: null,
         isMonitoring: false,
         isAnalyzing: false,
+        abortController: null,
+        currentImageBase64: null,
         sessionId: null,
         activeRequestToken: 0,
         captureIntervalId: null,
@@ -56,13 +58,15 @@
         // Inputs
         inputAsset: document.getElementById('input-asset'),
         inputTimeframe: document.getElementById('input-timeframe'),
+        inputTradeHorizon: document.getElementById('input-trade-horizon'),
         inputInterval: document.getElementById('input-interval'),
         inputObsDuration: document.getElementById('input-observation-duration'),
 
         // Controls
         btnShare: document.getElementById('btn-share-chart'),
         btnStart: document.getElementById('btn-start-monitoring'),
-        btnStop: document.getElementById('btn-stop-monitoring'),
+        btnAnalyze: document.getElementById('btn-analyze-chart'),
+        btnStopAnalyze: document.getElementById('btn-stop-analyze'),
         btnEndSharing: document.getElementById('btn-end-sharing'),
         btnResetCrop: document.getElementById('btn-reset-crop'),
 
@@ -82,8 +86,14 @@
         metaTimeframe: document.getElementById('meta-timeframe'),
         metaQuality: document.getElementById('meta-quality'),
         metaTrend: document.getElementById('meta-trend'),
+        metaChartTime: document.getElementById('meta-chart-time'),
         metaTimeIst: document.getElementById('meta-time-ist'),
         metaAge: document.getElementById('meta-age'),
+        metaTradeHorizon: document.getElementById('meta-trade-horizon'),
+        metaForecast: document.getElementById('meta-forecast'),
+        metaConfidence: document.getElementById('meta-confidence'),
+        metaPattern: document.getElementById('meta-pattern'),
+        forecastSummary: document.getElementById('forecast-summary'),
         patternsList: document.getElementById('patterns-list'),
         srDetails: document.getElementById('sr-details'),
         reasoning: document.getElementById('assessment-reasoning'),
@@ -175,6 +185,8 @@
 
     function setStatus(statusName) {
         const badge = elements.badgeStatus;
+        if (!badge) return;
+
         badge.className = 'badge badge-status';
         switch (statusName) {
             case 'Idle':
@@ -189,6 +201,10 @@
                 badge.classList.add('badge-analyzing');
                 badge.textContent = 'Status: Analyzing';
                 break;
+            case 'Ready':
+                badge.classList.add('badge-stopped');
+                badge.textContent = 'Status: Ready';
+                break;
             case 'Stopped':
                 badge.classList.add('badge-stopped');
                 badge.textContent = 'Status: Stopped';
@@ -197,6 +213,12 @@
                 badge.classList.add('badge-error');
                 badge.textContent = 'Status: Error';
                 break;
+        }
+    }
+
+    function setButtonDisabled(button, disabled) {
+        if (button) {
+            button.disabled = disabled;
         }
     }
 
@@ -230,6 +252,10 @@
     }
 
     async function refreshMetricsAndHistory() {
+        if (!elements.toggleIncludeMock) {
+            return;
+        }
+
         const includeMock = elements.toggleIncludeMock.checked;
         state.includeMockMetrics = includeMock;
 
@@ -301,10 +327,10 @@
                 resetCropToFull();
                 updateCropThumbnail();
 
-                elements.btnStart.disabled = false;
-                elements.btnEndSharing.disabled = false;
-                elements.btnShare.disabled = true;
-                elements.btnResetCrop.disabled = false;
+                setButtonDisabled(elements.btnStart, false);
+                setButtonDisabled(elements.btnEndSharing, false);
+                setButtonDisabled(elements.btnShare, true);
+                setButtonDisabled(elements.btnResetCrop, false);
                 setStatus('Sharing');
             };
 
@@ -324,7 +350,9 @@
         if (elements.liveVideo.videoWidth !== state.sourceWidth || elements.liveVideo.videoHeight !== state.sourceHeight) {
             state.sourceWidth = elements.liveVideo.videoWidth;
             state.sourceHeight = elements.liveVideo.videoHeight;
-            elements.dimChangeBanner.classList.remove('hidden');
+            if (elements.dimChangeBanner) {
+                elements.dimChangeBanner.classList.remove('hidden');
+            }
             syncCropCanvasSize();
             resetCropToFull();
         }
@@ -344,13 +372,17 @@
         elements.cropCanvas.classList.add('hidden');
         elements.videoPlaceholder.classList.remove('hidden');
 
-        elements.btnShare.disabled = false;
-        elements.btnStart.disabled = true;
-        elements.btnStop.disabled = true;
-        elements.btnEndSharing.disabled = true;
-        elements.btnResetCrop.disabled = true;
+        setButtonDisabled(elements.btnShare, false);
+        setButtonDisabled(elements.btnStart, true);
+        setButtonDisabled(elements.btnAnalyze, true);
+        setButtonDisabled(elements.btnStopAnalyze, true);
+        setButtonDisabled(elements.btnEndSharing, true);
+        setButtonDisabled(elements.btnResetCrop, true);
         state.cropRect = null;
-        elements.cropInfo.textContent = 'None';
+        state.currentImageBase64 = null;
+        if (elements.cropInfo) {
+            elements.cropInfo.textContent = 'None';
+        }
 
         // Clear thumbnail preview
         const ctx = elements.previewThumbnail.getContext('2d');
@@ -359,55 +391,120 @@
         setStatus('Idle');
     }
 
-    function startMonitoring() {
+    function captureScreenshot() {
         if (!state.stream || !state.videoTrack) {
-            alert('Please share your Quotex chart screen first.');
+            alert('Please share your chart screen first.');
             return;
         }
 
-        const intervalSec = parseInt(elements.inputInterval.value, 10) || 60;
-        if (intervalSec < 10) {
-            alert('Minimum interval is 10 seconds.');
+        const imageBase64 = getCroppedBase64();
+        if (!imageBase64) {
+            alert('No chart image was captured. Please select a crop first.');
             return;
         }
 
-        state.isMonitoring = true;
+        state.currentImageBase64 = imageBase64;
         state.sessionId = 'sess_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
         state.activeRequestToken++;
+        setButtonDisabled(elements.btnAnalyze, false);
+        setButtonDisabled(elements.btnStopAnalyze, true);
+        setStatus('Ready');
+        updateCropThumbnail();
 
-        elements.btnStart.disabled = true;
-        elements.btnStop.disabled = false;
-        elements.btnShare.disabled = true;
-        elements.inputInterval.disabled = true;
+        if (elements.assessmentEmpty) {
+            elements.assessmentEmpty.classList.add('hidden');
+        }
+        if (elements.assessmentDetails) {
+            elements.assessmentDetails.classList.remove('hidden');
+        }
 
-        setStatus('Analyzing');
+        startProgressLoading('capture', 0, 100);
+        setTimeout(() => {
+            renderCaptureReadyState();
+        }, 900);
+    }
 
-        // Immediate first capture
-        captureAndAnalyze();
+    function stopProgressLoading() {
+        if (state.progressTimerId) {
+            clearInterval(state.progressTimerId);
+            state.progressTimerId = null;
+        }
+        state.progressStage = null;
+        state.progressPercent = 0;
+    }
 
-        // Schedule periodic captures
-        state.captureIntervalId = setInterval(() => {
-            if (state.isMonitoring && !state.isPageHidden) {
-                captureAndAnalyze();
+    function renderProgressState(stage, percent) {
+        const el = elements.forecastSummary || document.getElementById('forecast-summary');
+        if (!el) return;
+
+        const stageLabel = stage === 'capture' ? 'Capturing screenshot' : 'Analyzing chart';
+        const statusText = stage === 'capture'
+            ? 'Preparing a clean crop for the next 5-minute forecast.'
+            : 'Reading the chart pattern, trend, and possible next move.';
+
+        const safePercent = Math.min(100, Math.max(0, Number(percent) || 0));
+        state.progressPercent = safePercent;
+
+        el.innerHTML = `
+            <div class="progress-header">
+                <strong>${stageLabel}</strong>
+                <span>${safePercent}%</span>
+            </div>
+            <div class="progress-track"><span class="progress-fill" style="width: ${safePercent}%"></span></div>
+            <div class="progress-text">${statusText}</div>
+        `;
+    }
+
+    function startProgressLoading(stage, startPercent = 0, maxPercent = 100) {
+        stopProgressLoading();
+        state.progressStage = stage;
+        let current = startPercent;
+        renderProgressState(stage, current);
+
+        const increment = stage === 'capture' ? 10 : 6;
+        state.progressTimerId = setInterval(() => {
+            current += increment;
+            if (current >= maxPercent) {
+                current = maxPercent;
+                renderProgressState(stage, current);
+                clearInterval(state.progressTimerId);
+                state.progressTimerId = null;
+                return;
             }
-        }, intervalSec * 1000);
+            renderProgressState(stage, current);
+        }, stage === 'capture' ? 180 : 260);
+    }
+
+    function renderCaptureReadyState() {
+        stopProgressLoading();
+
+        const el = elements.forecastSummary || document.getElementById('forecast-summary');
+        if (el) {
+            el.innerHTML = '<div class="progress-header"><strong>Screenshot captured</strong><span>100%</span></div><div class="progress-track"><span class="progress-fill" style="width: 100%"></span></div><div class="progress-text">Use Analyze Chart to process the selected crop and forecast the next 5 minutes.</div>';
+        }
+
+        if (elements.signalDirection) {
+            elements.signalDirection.textContent = 'READY';
+            elements.signalDirection.className = 'direction-badge direction-wait';
+        }
+        if (elements.metaForecast) {
+            elements.metaForecast.textContent = 'Pending analysis';
+        }
+        if (elements.metaConfidence) {
+            elements.metaConfidence.textContent = 'Waiting';
+        }
     }
 
     function stopMonitoring() {
-        if (!state.isMonitoring) return;
-
-        state.isMonitoring = false;
-        state.activeRequestToken++; // Invalidate pending responses
-
         if (state.captureIntervalId) {
             clearInterval(state.captureIntervalId);
             state.captureIntervalId = null;
         }
-
-        elements.btnStart.disabled = !state.stream;
-        elements.btnStop.disabled = true;
-        elements.inputInterval.disabled = false;
-
+        state.isMonitoring = false;
+        state.activeRequestToken++;
+        setButtonDisabled(elements.btnStart, !state.stream);
+        setButtonDisabled(elements.btnAnalyze, !state.currentImageBase64);
+        setButtonDisabled(elements.btnStopAnalyze, true);
         setStatus(state.stream ? 'Stopped' : 'Idle');
     }
 
@@ -421,27 +518,38 @@
             if (state.isMonitoring) {
                 state.wasMonitoringBeforeHidden = true;
                 stopMonitoring();
-                elements.visibilityBanner.classList.remove('hidden');
+                if (elements.visibilityBanner) {
+                    elements.visibilityBanner.classList.remove('hidden');
+                }
             }
         } else {
             state.isPageHidden = false;
-            // Never resume automatically! Require explicit user click
         }
     });
 
-    elements.btnResumeMonitoring.addEventListener('click', () => {
-        elements.visibilityBanner.classList.add('hidden');
-        if (state.stream && state.videoTrack && state.videoTrack.readyState === 'live') {
-            startMonitoring();
-        } else {
-            alert('Screen share stream has ended. Please click "Share Chart" again.');
-            elements.visibilityBanner.classList.add('hidden');
-        }
-    });
+    if (elements.btnResumeMonitoring) {
+        elements.btnResumeMonitoring.addEventListener('click', () => {
+            if (elements.visibilityBanner) {
+                elements.visibilityBanner.classList.add('hidden');
+            }
+            if (state.stream && state.videoTrack && state.videoTrack.readyState === 'live') {
+                setStatus('Sharing');
+            } else {
+                alert('Screen share stream has ended. Please click "Share Screen" again.');
+                if (elements.visibilityBanner) {
+                    elements.visibilityBanner.classList.add('hidden');
+                }
+            }
+        });
+    }
 
-    elements.btnDismissDimAlert.addEventListener('click', () => {
-        elements.dimChangeBanner.classList.add('hidden');
-    });
+    if (elements.btnDismissDimAlert) {
+        elements.btnDismissDimAlert.addEventListener('click', () => {
+            if (elements.dimChangeBanner) {
+                elements.dimChangeBanner.classList.add('hidden');
+            }
+        });
+    }
 
     // -------------------------------------------------------------------------
     // Interactive Crop Canvas & Geometry Mapping
@@ -614,44 +722,51 @@
     // Capture & Analysis Execution
     // -------------------------------------------------------------------------
 
-    async function captureAndAnalyze() {
-        // Enforce single in-flight request guard
+    async function analyzeCurrentScreenshot() {
         if (state.isAnalyzing) {
-            console.log('Skipping capture interval: previous request is still in flight.');
+            console.log('A chart analysis is already running.');
             return;
         }
 
-        if (!state.isMonitoring || state.isPageHidden) return;
-
-        const imageBase64 = getCroppedBase64();
-        if (!imageBase64) return;
-
-        updateCropThumbnail();
+        const imageBase64 = state.currentImageBase64 || getCroppedBase64();
+        if (!imageBase64) {
+            alert('Capture a screenshot first before analyzing.');
+            return;
+        }
 
         state.isAnalyzing = true;
+        setStatus('Analyzing');
+        setButtonDisabled(elements.btnAnalyze, true);
+        setButtonDisabled(elements.btnStopAnalyze, false);
+        startProgressLoading('analyze', 15, 92);
         const currentToken = state.activeRequestToken;
-        const currentSession = state.sessionId;
+        const currentSession = state.sessionId || ('sess_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7));
         const captureUtc = new Date().toISOString();
 
         const payload = {
             image_base64: imageBase64,
-            asset: elements.inputAsset.value.trim() || 'EUR/USD OTC',
-            timeframe: elements.inputTimeframe.value,
-            observation_duration: elements.inputObsDuration.value,
+            asset: elements.inputAsset && elements.inputAsset.value ? elements.inputAsset.value.trim() : 'EUR/USD OTC',
+            timeframe: elements.inputTimeframe ? elements.inputTimeframe.value : '1m',
+            observation_duration: elements.inputObsDuration ? elements.inputObsDuration.value : '1m',
+            trade_horizon: elements.inputTradeHorizon ? elements.inputTradeHorizon.value : '1m',
             capture_timestamp: captureUtc,
             session_id: currentSession
         };
 
+        let abortController = null;
+
         try {
+            abortController = new AbortController();
+            state.abortController = abortController;
             const response = await fetch('/api/analyze', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
+                body: JSON.stringify(payload),
+                signal: abortController.signal
             });
 
-            // Discard late response if session was stopped or superseded
-            if (currentToken !== state.activeRequestToken || !state.isMonitoring) {
-                console.log('Discarded late response from stopped/superseded session.');
+            if (currentToken !== state.activeRequestToken) {
+                console.log('Discarded stale analysis response.');
                 return;
             }
 
@@ -661,18 +776,80 @@
 
             const data = await response.json();
             renderLatestAssessment(data);
+            renderAnalysisOverlay(data.analysis);
             refreshMetricsAndHistory();
+            stopProgressLoading();
+            renderProgressState('analyze', 100);
+            setTimeout(() => {
+                renderCaptureReadyState();
+            }, 250);
+            setStatus('Ready');
 
         } catch (err) {
+            if (err.name === 'AbortError') {
+                console.log('Chart analysis was stopped by the user.');
+                stopProgressLoading();
+                setStatus('Ready');
+                return;
+            }
             console.error('Analysis request failed:', err);
+            stopProgressLoading();
+            setStatus('Error');
         } finally {
             state.isAnalyzing = false;
+            state.abortController = null;
+            setButtonDisabled(elements.btnAnalyze, false);
+            setButtonDisabled(elements.btnStopAnalyze, true);
         }
+    }
+
+    function stopAnalyzeCurrentScreenshot() {
+        if (state.abortController) {
+            state.abortController.abort();
+            state.abortController = null;
+        }
+        stopProgressLoading();
+        state.activeRequestToken++;
+        state.isAnalyzing = false;
+        setButtonDisabled(elements.btnAnalyze, false);
+        setButtonDisabled(elements.btnStopAnalyze, true);
+        setStatus('Ready');
+        renderCaptureReadyState();
     }
 
     // -------------------------------------------------------------------------
     // Render Assessment Card
     // -------------------------------------------------------------------------
+
+    function renderAnalysisOverlay(analysis) {
+        const thumb = elements.previewThumbnail;
+        if (!thumb) return;
+        const ctx = thumb.getContext('2d');
+        const width = thumb.width;
+        const height = thumb.height;
+        ctx.clearRect(0, 0, width, height);
+
+        const patternText = (analysis && analysis.candle_pattern) ? analysis.candle_pattern : 'Pattern scan';
+        const direction = (analysis && analysis.predicted_direction) ? analysis.predicted_direction : 'WAIT';
+        const biasColor = direction === 'UP' ? '#22c55e' : (direction === 'DOWN' ? '#ef4444' : '#f59e0b');
+
+        ctx.strokeStyle = biasColor;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(20, height - 30);
+        ctx.lineTo(width - 30, height - 30);
+        ctx.moveTo(30, 30);
+        ctx.lineTo(30, height - 40);
+        ctx.stroke();
+
+        ctx.fillStyle = biasColor;
+        ctx.font = 'bold 16px Inter, sans-serif';
+        ctx.fillText(direction, width - 90, 28);
+
+        ctx.fillStyle = '#dbeafe';
+        ctx.font = '12px Inter, sans-serif';
+        ctx.fillText(patternText.substring(0, 28), 40, height - 20);
+    }
 
     function renderLatestAssessment(res) {
         state.latestAssessment = res;
@@ -691,19 +868,31 @@
         }
 
         const a = res.analysis;
+        const predictedDirection = (a.predicted_direction || a.direction || 'WAIT');
         const dirBadge = elements.signalDirection;
         dirBadge.className = 'direction-badge';
-        dirBadge.textContent = a.direction;
+        dirBadge.textContent = predictedDirection;
 
-        if (a.direction === 'UP') dirBadge.classList.add('direction-up');
-        else if (a.direction === 'DOWN') dirBadge.classList.add('direction-down');
+        if (predictedDirection === 'UP') dirBadge.classList.add('direction-up');
+        else if (predictedDirection === 'DOWN') dirBadge.classList.add('direction-down');
         else dirBadge.classList.add('direction-wait');
 
-        elements.metaAsset.textContent = res.asset;
+        elements.metaAsset.textContent = a.currency_pair || res.asset;
         elements.metaTimeframe.textContent = res.timeframe;
         elements.metaQuality.textContent = a.data_quality;
         elements.metaTrend.textContent = a.trend.toUpperCase();
+        elements.metaChartTime.textContent = a.chart_time ? formatToIST(a.chart_time) : formatToIST(res.capture_timestamp);
         elements.metaTimeIst.textContent = formatToIST(res.capture_timestamp);
+        elements.metaTradeHorizon.textContent = a.trade_horizon || elements.inputTradeHorizon.value;
+        elements.metaForecast.textContent = predictedDirection;
+        elements.metaConfidence.textContent = `${Math.round((a.confidence_score || 0) * 100)}%`;
+        elements.metaPattern.textContent = a.candle_pattern || 'Not classified';
+
+        elements.forecastSummary.innerHTML = `
+            <strong>Prediction:</strong> ${predictedDirection}<br>
+            <strong>5-minute outlook:</strong> ${a.next_5_min_outlook || 'No next-5-minute forecast available.'}<br>
+            <strong>Backtest:</strong> ${a.backtest_summary || 'No similar-pattern backtest summary available.'}
+        `;
 
         // Patterns
         if (a.patterns && a.patterns.length > 0) {
@@ -802,6 +991,10 @@
     // -------------------------------------------------------------------------
 
     function renderMetrics(m) {
+        if (!elements.statWinRate || !elements.statWinRateDesc || !elements.statWilsonCi || !elements.statNetPnl || !elements.statMaxDd || !elements.statLossStreak || !elements.statCounts || !elements.statExclusions) {
+            return;
+        }
+
         elements.statWinRate.textContent = `${m.win_rate_percent}%`;
         elements.statWinRateDesc.textContent = m.win_rate_denominator_description;
 
@@ -817,12 +1010,14 @@
         elements.statExclusions.textContent = `Skipped: ${m.skipped} | Unres: ${m.unresolved} | Wait: ${m.wait_assessments_excluded}`;
 
         // Insufficient evidence alert badge
-        if (m.insufficient_evidence) {
-            elements.evidenceAlert.className = 'alert-box alert-warning';
-            elements.evidenceMessage.textContent = m.evidence_message;
-        } else {
-            elements.evidenceAlert.className = 'alert-box alert-info';
-            elements.evidenceMessage.textContent = m.evidence_message;
+        if (elements.evidenceAlert && elements.evidenceMessage) {
+            if (m.insufficient_evidence) {
+                elements.evidenceAlert.className = 'alert-box alert-warning';
+                elements.evidenceMessage.textContent = m.evidence_message;
+            } else {
+                elements.evidenceAlert.className = 'alert-box alert-info';
+                elements.evidenceMessage.textContent = m.evidence_message;
+            }
         }
     }
 
@@ -831,6 +1026,8 @@
     // -------------------------------------------------------------------------
 
     function renderTradesTable(trades) {
+        if (!elements.tbodyTrades) return;
+
         if (!trades || trades.length === 0) {
             elements.tbodyTrades.innerHTML = '<tr><td colspan="8" class="text-center">No trades recorded yet.</td></tr>';
             return;
@@ -861,6 +1058,8 @@
     }
 
     function renderAssessmentsTable(assessments) {
+        if (!elements.tbodyAssessments) return;
+
         if (!assessments || assessments.length === 0) {
             elements.tbodyAssessments.innerHTML = '<tr><td colspan="9" class="text-center">No assessments generated yet.</td></tr>';
             return;
@@ -943,23 +1142,30 @@
     // Event Listeners & Tab Switching
     // -------------------------------------------------------------------------
 
-    elements.btnShare.addEventListener('click', startScreenSharing);
-    elements.btnStart.addEventListener('click', startMonitoring);
-    elements.btnStop.addEventListener('click', stopMonitoring);
-    elements.btnEndSharing.addEventListener('click', endScreenSharing);
-    elements.btnResetCrop.addEventListener('click', resetCropToFull);
+    if (elements.btnShare) elements.btnShare.addEventListener('click', startScreenSharing);
+    if (elements.btnStart) elements.btnStart.addEventListener('click', captureScreenshot);
+    if (elements.btnAnalyze) elements.btnAnalyze.addEventListener('click', analyzeCurrentScreenshot);
+    if (elements.btnStopAnalyze) elements.btnStopAnalyze.addEventListener('click', stopAnalyzeCurrentScreenshot);
+    if (elements.btnEndSharing) elements.btnEndSharing.addEventListener('click', endScreenSharing);
+    if (elements.btnResetCrop) elements.btnResetCrop.addEventListener('click', resetCropToFull);
 
-    elements.toggleIncludeMock.addEventListener('change', refreshMetricsAndHistory);
+    if (elements.toggleIncludeMock) {
+        elements.toggleIncludeMock.addEventListener('change', refreshMetricsAndHistory);
+    }
 
-    elements.btnExportTrades.addEventListener('click', () => {
-        const includeMock = elements.toggleIncludeMock.checked;
-        window.location.href = `/api/export/csv?table=trades&include_mock=${includeMock}`;
-    });
+    if (elements.btnExportTrades) {
+        elements.btnExportTrades.addEventListener('click', () => {
+            const includeMock = elements.toggleIncludeMock ? elements.toggleIncludeMock.checked : false;
+            window.location.href = `/api/export/csv?table=trades&include_mock=${includeMock}`;
+        });
+    }
 
-    elements.btnExportAssessments.addEventListener('click', () => {
-        const includeMock = elements.toggleIncludeMock.checked;
-        window.location.href = `/api/export/csv?table=assessments&include_mock=${includeMock}`;
-    });
+    if (elements.btnExportAssessments) {
+        elements.btnExportAssessments.addEventListener('click', () => {
+            const includeMock = elements.toggleIncludeMock ? elements.toggleIncludeMock.checked : false;
+            window.location.href = `/api/export/csv?table=assessments&include_mock=${includeMock}`;
+        });
+    }
 
     // Tabs switching
     document.querySelectorAll('.tab-btn').forEach(btn => {

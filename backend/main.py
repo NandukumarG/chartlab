@@ -106,7 +106,8 @@ async def analyze_endpoint(req: AnalyzeRequest):
         asset=req.asset,
         timeframe=req.timeframe,
         observation_duration=req.observation_duration,
-        capture_timestamp=req.capture_timestamp
+        capture_timestamp=req.capture_timestamp,
+        trade_horizon=req.trade_horizon
     )
 
     assessment_id = str(uuid.uuid4())
