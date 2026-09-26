@@ -32,7 +32,7 @@ CRITICAL INSTRUCTIONS & SAFETY RULES:
 
 ANALYSIS_USER_PROMPT_TEMPLATE = """Evaluate this cropped chart screenshot for evaluation purposes.
 
-Context:
+Context (as entered by the user - may not match what is actually visible on screen):
 - Asset / Pair: {asset}
 - Candle Timeframe: {timeframe}
 - Evaluation Observation Duration: {observation_duration}
@@ -40,61 +40,29 @@ Context:
 - Capture UTC Timestamp: {capture_timestamp}
 - Strategy Rulebook Version: {strategy_version}
 
-Analyze the visible completed candles, current trend structure, approximate horizontal/dynamic support and resistance levels, and any recognizable patterns (e.g., engulfing, pin bar/hammer, double top/bottom, triangles, breakouts). Then provide a short next-5-minute directional outlook with a trade horizon of {trade_horizon}.
+First, check whether an instrument/ticker label is actually visible printed on the chart (commonly top-left, e.g. "EUR/USD OTC"). Report exactly what you can read in 'currency_pair' - do NOT copy the user-entered asset above if it differs from or isn't confirmed by what's on screen, and leave it null if no label is visible.
+
+Then analyze the visible completed candles, current trend structure, approximate horizontal/dynamic support and resistance levels, and any recognizable patterns (e.g., engulfing, pin bar/hammer, double top/bottom, triangles, breakouts). Then provide a short next-5-minute directional outlook with a trade horizon of {trade_horizon}.
 
 Return your evaluation strictly in the requested structured JSON format."""
 
 
-def build_prediction_snapshot(
-    asset: str,
-    timeframe: str,
-    direction: str,
-    patterns: Optional[list[str]] = None,
+def normalize_forecast_meta(
     trade_horizon: str = "1m",
     current_time: Optional[str] = None,
 ) -> dict:
-    """Create a compact forecast snapshot for screenshot-based candle analysis."""
+    """
+    Normalize purely mechanical forecast metadata (horizon clamp + capture time).
+
+    Deliberately does NOT invent a confidence score or "backtest summary" — a
+    single screenshot carries no historical outcome data to back either claim.
+    Real historical performance must come from this app's own logged trade
+    history (see metrics.calculate_performance_report's by_pattern breakdown),
+    never from a formula keyed on the pattern's name.
+    """
     horizon = trade_horizon if trade_horizon in {"1m", "2m"} else "1m"
-    pattern_names = patterns or []
-    joined_patterns = " / ".join(pattern_names[:2]) if pattern_names else "trend continuation"
-    direction_key = (direction or "WAIT").upper()
-    pattern_lower = joined_patterns.lower()
-
-    if direction_key == "UP":
-        confidence = 0.76
-        if "triangle" in pattern_lower:
-            confidence += 0.06
-        if "hammer" in pattern_lower or "pin" in pattern_lower:
-            confidence += 0.04
-        predicted_direction = "UP"
-        outlook = "Bullish continuation is favored for the next 5-minute window. Price is expected to hold support and test nearby resistance before expiry."
-    elif direction_key == "DOWN":
-        confidence = 0.76
-        if "triangle" in pattern_lower:
-            confidence += 0.06
-        if "engulf" in pattern_lower or "reversal" in pattern_lower:
-            confidence += 0.04
-        predicted_direction = "DOWN"
-        outlook = "Bearish pressure is favored for the next 5-minute window. Sellers are likely to keep price below local resistance while support fails."
-    else:
-        confidence = 0.59
-        predicted_direction = "WAIT"
-        outlook = "The chart is balanced and range-bound. The next 5-minute window is more likely to stay indecisive until a breakout confirms direction."
-
-    if horizon == "2m":
-        confidence = min(0.93, confidence + 0.03)
-
-    backtest_summary = (
-        f"Backtest: {joined_patterns} on {timeframe} candles showed {predicted_direction.lower()} follow-through in similar screenshot setups, "
-        f"with the {horizon} expiry giving the cleanest 5-minute reaction window."
-    )
-
     return {
-        "predicted_direction": predicted_direction,
         "trade_horizon": horizon,
-        "confidence_score": round(confidence, 2),
-        "next_5_min_outlook": outlook,
-        "backtest_summary": backtest_summary,
         "chart_time": current_time or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     }
 
@@ -243,22 +211,13 @@ def generate_mock_analysis(
 
     choice = random.choice(scenarios)
     analysis = AIChartAnalysis(**choice)
-    snapshot = build_prediction_snapshot(
-        asset=asset,
-        timeframe=timeframe,
-        direction=analysis.direction.value,
-        patterns=[p.name for p in analysis.patterns],
-        trade_horizon=trade_horizon,
-        current_time=current_time or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    )
+    meta = normalize_forecast_meta(trade_horizon=trade_horizon, current_time=current_time)
     analysis.currency_pair = asset
-    analysis.chart_time = snapshot["chart_time"]
+    analysis.chart_time = meta["chart_time"]
     analysis.candle_pattern = " / ".join([p.name for p in analysis.patterns])
-    analysis.trade_horizon = snapshot["trade_horizon"]
-    analysis.predicted_direction = DirectionEnum(snapshot["predicted_direction"])
-    analysis.confidence_score = snapshot["confidence_score"]
-    analysis.next_5_min_outlook = snapshot["next_5_min_outlook"]
-    analysis.backtest_summary = snapshot["backtest_summary"]
+    analysis.trade_horizon = meta["trade_horizon"]
+    # No next_5_min_outlook here: Mock Mode has no real model reasoning about
+    # this screenshot, so it stays None rather than showing invented text.
     return analysis
 
 async def analyze_chart(
@@ -368,39 +327,23 @@ async def analyze_chart(
                 invalidation_condition=None,
                 limitations="Model refused image analysis."
             )
-            snapshot = build_prediction_snapshot(
-                asset=asset,
-                timeframe=timeframe,
-                direction="WAIT",
-                patterns=[],
-                trade_horizon=trade_horizon,
-                current_time=capture_timestamp,
-            )
+            meta = normalize_forecast_meta(trade_horizon=trade_horizon, current_time=capture_timestamp)
             fallback.currency_pair = asset
-            fallback.chart_time = snapshot["chart_time"]
-            fallback.trade_horizon = snapshot["trade_horizon"]
-            fallback.predicted_direction = DirectionEnum.WAIT
-            fallback.confidence_score = snapshot["confidence_score"]
-            fallback.next_5_min_outlook = snapshot["next_5_min_outlook"]
-            fallback.backtest_summary = snapshot["backtest_summary"]
+            fallback.chart_time = meta["chart_time"]
+            fallback.trade_horizon = meta["trade_horizon"]
             return fallback, False, refusal
 
-        snapshot = build_prediction_snapshot(
-            asset=asset,
-            timeframe=timeframe,
-            direction=parsed.direction.value,
-            patterns=[p.name for p in parsed.patterns],
-            trade_horizon=trade_horizon,
-            current_time=capture_timestamp,
-        )
-        parsed.currency_pair = asset
-        parsed.chart_time = snapshot["chart_time"]
+        meta = normalize_forecast_meta(trade_horizon=trade_horizon, current_time=capture_timestamp)
+        # Keep the model's own on-chart read when it found one - overwriting it
+        # with the typed asset would silently hide a mismatch between what the
+        # user entered and what's actually on screen (only fall back when the
+        # model saw no visible ticker label at all).
+        parsed.currency_pair = parsed.currency_pair or asset
+        parsed.chart_time = meta["chart_time"]
         parsed.candle_pattern = " / ".join([p.name for p in parsed.patterns]) if parsed.patterns else "Pattern scan incomplete"
-        parsed.trade_horizon = snapshot["trade_horizon"]
-        parsed.predicted_direction = parsed.direction
-        parsed.confidence_score = snapshot["confidence_score"]
-        parsed.next_5_min_outlook = snapshot["next_5_min_outlook"]
-        parsed.backtest_summary = snapshot["backtest_summary"]
+        parsed.trade_horizon = meta["trade_horizon"]
+        # parsed.next_5_min_outlook is left exactly as the model produced it —
+        # it must not be overwritten with a canned, direction-keyed sentence.
         return parsed, False, None
 
     except Exception as e:
@@ -416,20 +359,9 @@ async def analyze_chart(
             invalidation_condition=None,
             limitations="API communication failure."
         )
-        snapshot = build_prediction_snapshot(
-            asset=asset,
-            timeframe=timeframe,
-            direction="WAIT",
-            patterns=[],
-            trade_horizon=trade_horizon,
-            current_time=capture_timestamp,
-        )
+        meta = normalize_forecast_meta(trade_horizon=trade_horizon, current_time=capture_timestamp)
         fallback.currency_pair = asset
-        fallback.chart_time = snapshot["chart_time"]
-        fallback.trade_horizon = snapshot["trade_horizon"]
-        fallback.predicted_direction = DirectionEnum.WAIT
-        fallback.confidence_score = snapshot["confidence_score"]
-        fallback.next_5_min_outlook = snapshot["next_5_min_outlook"]
-        fallback.backtest_summary = snapshot["backtest_summary"]
+        fallback.chart_time = meta["chart_time"]
+        fallback.trade_horizon = meta["trade_horizon"]
         return fallback, False, error_msg
 

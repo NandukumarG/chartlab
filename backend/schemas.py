@@ -64,14 +64,17 @@ class AIChartAnalysis(BaseModel):
     limitations: str = Field(
         description="Missing context, OTC noise, absence of volume, or visual ambiguity"
     )
-    currency_pair: Optional[str] = Field(default=None, description="Asset or pair extracted from the chart screenshot context")
+    currency_pair: Optional[str] = Field(
+        default=None,
+        description="Asset/instrument ticker label as literally visible in the chart screenshot (e.g. 'EUR/USD OTC'). Read it only from visible on-chart text; set to null if no ticker label is visible in the crop - never guess."
+    )
     chart_time: Optional[str] = Field(default=None, description="Current market/capture time on the screenshot")
     candle_pattern: Optional[str] = Field(default=None, description="Detected candle structure or pattern summary")
     trade_horizon: str = Field(default="1m", description="Preferred trade horizon for the next 5-minute forecast: 1m or 2m")
-    predicted_direction: Optional[DirectionEnum] = Field(default=None, description="Next 5-minute forecast direction")
-    confidence_score: float = Field(default=0.0, description="Confidence score for the forecast between 0 and 1")
-    next_5_min_outlook: Optional[str] = Field(default=None, description="Human-readable next 5-minute market outlook")
-    backtest_summary: Optional[str] = Field(default=None, description="Short backtest summary for similar candle pattern outcomes")
+    next_5_min_outlook: Optional[str] = Field(
+        default=None,
+        description="Model's own short next-5-minute outlook grounded strictly in the visible chart. Not generated in Mock Mode."
+    )
 
 # -----------------------------------------------------------------------------
 # API Request / Response Schemas

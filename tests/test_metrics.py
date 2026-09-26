@@ -4,7 +4,7 @@ from backend.metrics import (
     calculate_drawdown_and_streaks,
     calculate_performance_report
 )
-from backend.analyzer import build_prediction_snapshot
+from backend.analyzer import normalize_forecast_meta
 
 def test_payout_and_pnl_calculation():
     """Verify that payouts and PnL correctly handle wins, losses, and draws."""
@@ -150,20 +150,60 @@ def test_separation_of_mock_and_real_data():
     assert mock_rep["win_rate_percent"] == 75.0
 
 
-def test_screenshot_prediction_snapshot_uses_pattern_and_horizon():
-    """The forecast should use detected candlestick structure and the selected expiry horizon."""
-    snapshot = build_prediction_snapshot(
-        asset="EUR/USD",
-        timeframe="1m",
-        direction="UP",
-        patterns=["Hammer / Pin Bar", "Ascending Triangle"],
-        trade_horizon="2m",
-        current_time="2026-09-26 10:32:00"
-    )
+def test_normalize_forecast_meta_clamps_horizon_and_keeps_capture_time():
+    """
+    Forecast metadata is purely mechanical (horizon validation + timestamp),
+    never an invented confidence score or backtest claim - a single screenshot
+    carries no historical outcome data to back either one.
+    """
+    meta = normalize_forecast_meta(trade_horizon="2m", current_time="2026-09-26 10:32:00")
+    assert meta["trade_horizon"] == "2m"
+    assert meta["chart_time"] == "2026-09-26 10:32:00"
 
-    assert snapshot["predicted_direction"] == "UP"
-    assert snapshot["trade_horizon"] == "2m"
-    assert "5-minute" in snapshot["next_5_min_outlook"].lower()
-    assert snapshot["confidence_score"] >= 0.5
-    assert "backtest" in snapshot["backtest_summary"].lower()
+    # Invalid/unsupported horizon values fall back to the 1m default
+    meta_invalid = normalize_forecast_meta(trade_horizon="15m", current_time=None)
+    assert meta_invalid["trade_horizon"] == "1m"
+    assert meta_invalid["chart_time"]  # falls back to current UTC time, never blank
+
+
+def test_pattern_history_breakdown_uses_real_logged_outcomes():
+    """
+    The 'backtest' shown to the user must come from real logged trade outcomes
+    linked to the assessment that identified the pattern - never a formula
+    keyed on the pattern's name.
+    """
+    assessments = [
+        {"id": "a1", "direction": "DOWN", "is_mock": False, "is_stale": False,
+         "patterns": [{"name": "Bearish Engulfing", "status": "confirmed"}]},
+        {"id": "a2", "direction": "UP", "is_mock": False, "is_stale": False,
+         "patterns": [{"name": "Bearish Engulfing", "status": "confirmed"}]},
+        {"id": "a3", "direction": "UP", "is_mock": False, "is_stale": False,
+         "patterns": [{"name": "Hammer / Pin Bar", "status": "confirmed"}]},
+    ]
+    trades = [
+        {"assessment_id": "a1", "outcome": "WIN", "pnl": 8.5, "asset": "EUR/USD",
+         "observation_duration": "1m", "is_mock": False, "was_entered": True},
+        {"assessment_id": "a2", "outcome": "LOSS", "pnl": -10.0, "asset": "EUR/USD",
+         "observation_duration": "1m", "is_mock": False, "was_entered": True},
+        {"assessment_id": "a3", "outcome": "WIN", "pnl": 8.5, "asset": "EUR/USD",
+         "observation_duration": "1m", "is_mock": False, "was_entered": True},
+        # Manual trade with no linked assessment: must not appear in by_pattern at all
+        {"assessment_id": None, "outcome": "WIN", "pnl": 8.5, "asset": "EUR/USD",
+         "observation_duration": "1m", "is_mock": False, "was_entered": True},
+    ]
+
+    report = calculate_performance_report(trades=trades, assessments=assessments, include_mock=False)
+    by_pattern = report["breakdowns"]["by_pattern"]
+
+    assert by_pattern["Bearish Engulfing"]["wins"] == 1
+    assert by_pattern["Bearish Engulfing"]["losses"] == 1
+    assert by_pattern["Bearish Engulfing"]["win_rate"] == 50.0
+    assert by_pattern["Bearish Engulfing"]["total"] == 2
+    assert by_pattern["Bearish Engulfing"]["insufficient_evidence"] is True
+
+    assert by_pattern["Hammer / Pin Bar"]["wins"] == 1
+    assert by_pattern["Hammer / Pin Bar"]["losses"] == 0
+
+    # 4 trades total but only 3 are attributable to a known pattern
+    assert sum(v["total"] for v in by_pattern.values()) == 3
 

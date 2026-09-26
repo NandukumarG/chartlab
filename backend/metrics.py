@@ -146,40 +146,65 @@ def calculate_performance_report(
     
     wilson_ci = calculate_wilson_ci(wins, total_decisive)
     dd_stats = calculate_drawdown_and_streaks(decisive_trades)
-    
-    # Breakdowns by Asset, Observation/Expiry Duration, Strategy Version
+
+    # Map assessment id -> pattern names, so real logged trade outcomes can be
+    # attributed to the chart pattern that was actually identified for them.
+    # This is the only legitimate source of "backtest" data in this app: a
+    # single screenshot has no history behind it, but a trade linked to a past
+    # assessment does.
+    assessment_patterns: Dict[str, List[str]] = {}
+    for a in filtered_assessments:
+        assessment_id = a.get("id")
+        pattern_names = [p.get("name") for p in (a.get("patterns") or []) if p.get("name")]
+        if assessment_id and pattern_names:
+            assessment_patterns[assessment_id] = pattern_names
+
+    # Breakdowns by Asset, Observation/Expiry Duration, Strategy Version, and
+    # real per-pattern historical performance from logged trade outcomes.
     breakdowns = {
         "by_asset": {},
         "by_expiry": {},
-        "by_strategy_version": {}
+        "by_strategy_version": {},
+        "by_pattern": {}
     }
-    
+
     for t in decisive_trades:
         asset = t.get("asset", "Unknown")
         expiry = t.get("observation_duration", "Unknown")
         version = t.get("strategy_version") or "v1.0.0"
         outcome = t.get("outcome", "").upper()
-        
-        # Helper for grouping
-        for category, key in [
+        pnl = float(t.get("pnl", 0.0))
+
+        # Trades not linked to an assessment (or whose assessment had no
+        # recognized pattern) are excluded from by_pattern - there is nothing
+        # real to attribute them to.
+        pattern_names = assessment_patterns.get(t.get("assessment_id"), [])
+
+        groupings = [
             ("by_asset", asset),
             ("by_expiry", expiry),
             ("by_strategy_version", version)
-        ]:
+        ] + [("by_pattern", name) for name in pattern_names]
+
+        for category, key in groupings:
             if key not in breakdowns[category]:
                 breakdowns[category][key] = {"wins": 0, "losses": 0, "pnl": 0.0}
             if outcome == "WIN":
                 breakdowns[category][key]["wins"] += 1
             elif outcome == "LOSS":
                 breakdowns[category][key]["losses"] += 1
-            breakdowns[category][key]["pnl"] = round(breakdowns[category][key]["pnl"] + float(t.get("pnl", 0.0)), 2)
-            
-    # Calculate group win rates
+            breakdowns[category][key]["pnl"] = round(breakdowns[category][key]["pnl"] + pnl, 2)
+
+    # Calculate group win rates plus a real Wilson CI per group, so a thin
+    # pattern sample is flagged as unreliable exactly like the aggregate stats.
     for cat in breakdowns:
         for k, v in breakdowns[cat].items():
             tot = v["wins"] + v["losses"]
             v["win_rate"] = round((v["wins"] / tot) * 100, 2) if tot > 0 else 0.0
             v["total"] = tot
+            group_ci = calculate_wilson_ci(v["wins"], tot)
+            v["wilson_95_ci"] = {"lower_percent": group_ci["lower"], "upper_percent": group_ci["upper"]}
+            v["insufficient_evidence"] = tot < 30
 
     # Insufficient evidence flag for small samples
     insufficient_evidence = total_decisive < 30

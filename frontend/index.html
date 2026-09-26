@@ -93,6 +93,16 @@
                     </button>
                 </div>
 
+                <!-- Live Operation Progress (Capturing / Analyzing) -->
+                <div id="operation-progress" class="operation-progress hidden">
+                    <div class="progress-header">
+                        <strong id="operation-progress-label">Working...</strong>
+                        <span id="operation-progress-percent">0%</span>
+                    </div>
+                    <div class="progress-track"><span id="operation-progress-fill" class="progress-fill" style="width: 0%"></span></div>
+                    <div class="progress-text" id="operation-progress-text">--</div>
+                </div>
+
                 <!-- Video Preview & Crop Canvas -->
                 <div class="video-container" id="video-wrapper">
                     <div class="video-placeholder" id="video-placeholder">
@@ -138,6 +148,10 @@
 
                 <!-- Dynamic Assessment Content Populated via JS -->
                 <div id="assessment-details" class="assessment-details hidden">
+                    <div id="asset-mismatch-banner" class="visibility-banner banner-alert hidden" style="margin-bottom: 14px; border-radius: var(--radius-sm);">
+                        <span>⚠️ <strong>Asset Mismatch:</strong> You entered "<strong id="mismatch-typed-asset">--</strong>" but the chart shows "<strong id="mismatch-detected-asset">--</strong>". Trades logged now will be tagged under the wrong asset in your backtest.</span>
+                        <button id="btn-use-detected-asset" class="btn btn-warning btn-sm">Use Detected Asset</button>
+                    </div>
                     <div class="signal-header">
                         <div class="signal-badge-wrap">
                             <span id="signal-direction" class="direction-badge direction-wait">WAIT</span>
@@ -152,7 +166,7 @@
                             <div><strong>Screenshot Age:</strong> <span id="meta-age">--</span></div>
                             <div><strong>Trade Horizon:</strong> <span id="meta-trade-horizon">1m</span></div>
                             <div><strong>Forecast:</strong> <span id="meta-forecast">--</span></div>
-                            <div><strong>Confidence:</strong> <span id="meta-confidence">--</span></div>
+                            <div><strong>Pattern Track Record:</strong> <span id="meta-confidence" title="Real win/loss history from your own logged demo trades for this exact pattern - not an AI-estimated confidence score.">--</span></div>
                             <div><strong>Candle Pattern:</strong> <span id="meta-pattern">--</span></div>
                         </div>
                     </div>

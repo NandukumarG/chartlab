@@ -12,7 +12,10 @@
         videoTrack: null,
         isMonitoring: false,
         isAnalyzing: false,
+        isCapturing: false,
         abortController: null,
+        progressTimerId: null,
+        progressPercent: 0,
         currentImageBase64: null,
         sessionId: null,
         activeRequestToken: 0,
@@ -42,7 +45,10 @@
 
         // Active selection
         latestAssessment: null,
-        includeMockMetrics: false
+        includeMockMetrics: false,
+        // Real per-pattern win/loss history from this app's own logged trades
+        // (backend.metrics breakdowns.by_pattern) - never a fabricated number.
+        patternPerformance: {}
     };
 
     // DOM Elements
@@ -77,7 +83,18 @@
         cropInfo: document.getElementById('crop-info'),
         previewThumbnail: document.getElementById('preview-thumbnail'),
 
+        // Live operation progress (capture / analyze)
+        operationProgress: document.getElementById('operation-progress'),
+        operationProgressLabel: document.getElementById('operation-progress-label'),
+        operationProgressPercent: document.getElementById('operation-progress-percent'),
+        operationProgressFill: document.getElementById('operation-progress-fill'),
+        operationProgressText: document.getElementById('operation-progress-text'),
+
         // Assessment
+        assetMismatchBanner: document.getElementById('asset-mismatch-banner'),
+        mismatchTypedAsset: document.getElementById('mismatch-typed-asset'),
+        mismatchDetectedAsset: document.getElementById('mismatch-detected-asset'),
+        btnUseDetectedAsset: document.getElementById('btn-use-detected-asset'),
         assessmentStaleTag: document.getElementById('assessment-stale-tag'),
         assessmentEmpty: document.getElementById('assessment-card'),
         assessmentDetails: document.getElementById('assessment-details'),
@@ -264,6 +281,7 @@
             const res = await fetch(`/api/metrics?include_mock=${includeMock}`);
             if (res.ok) {
                 const data = await res.json();
+                state.patternPerformance = (data.breakdowns && data.breakdowns.by_pattern) || {};
                 renderMetrics(data);
             }
         } catch (err) {
@@ -360,6 +378,8 @@
 
     function endScreenSharing() {
         stopMonitoring();
+        hideOperationProgress();
+        state.isCapturing = false;
 
         if (state.stream) {
             state.stream.getTracks().forEach(track => track.stop());
@@ -391,96 +411,133 @@
         setStatus('Idle');
     }
 
+    // -------------------------------------------------------------------------
+    // Live Operation Progress (real % feedback for capture / analyze)
+    // -------------------------------------------------------------------------
+
+    function clearOperationProgressTimer() {
+        if (state.progressTimerId) {
+            clearInterval(state.progressTimerId);
+            state.progressTimerId = null;
+        }
+    }
+
+    function showOperationProgress(label) {
+        clearOperationProgressTimer();
+        if (!elements.operationProgress) return;
+        elements.operationProgress.classList.remove('hidden');
+        updateOperationProgress(0, label);
+    }
+
+    function updateOperationProgress(percent, text) {
+        const safePercent = Math.round(Math.min(100, Math.max(0, Number(percent) || 0)));
+        state.progressPercent = safePercent;
+        if (elements.operationProgressPercent) elements.operationProgressPercent.textContent = `${safePercent}%`;
+        if (elements.operationProgressFill) elements.operationProgressFill.style.width = `${safePercent}%`;
+        if (text && elements.operationProgressText) elements.operationProgressText.textContent = text;
+    }
+
+    function hideOperationProgress(delayMs = 0) {
+        clearOperationProgressTimer();
+        setTimeout(() => {
+            if (elements.operationProgress) elements.operationProgress.classList.add('hidden');
+        }, delayMs);
+    }
+
+    // Non-blocking crop encode: toBlob() lets the browser paint the 0% state
+    // before doing the pixel work, instead of freezing the UI on a synchronous
+    // toDataURL() call and only "faking" a loader afterwards.
+    function getCroppedBase64Async() {
+        return new Promise((resolve, reject) => {
+            if (!elements.liveVideo || state.sourceWidth === 0 || !state.cropRect) {
+                resolve(null);
+                return;
+            }
+            const offscreen = document.createElement('canvas');
+            offscreen.width = state.cropRect.width;
+            offscreen.height = state.cropRect.height;
+            const offCtx = offscreen.getContext('2d');
+            offCtx.drawImage(
+                elements.liveVideo,
+                state.cropRect.x, state.cropRect.y, state.cropRect.width, state.cropRect.height,
+                0, 0, state.cropRect.width, state.cropRect.height
+            );
+            offscreen.toBlob((blob) => {
+                if (!blob) {
+                    resolve(null);
+                    return;
+                }
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = () => reject(reader.error);
+                reader.readAsDataURL(blob);
+            }, 'image/jpeg', 0.85);
+        });
+    }
+
     function captureScreenshot() {
         if (!state.stream || !state.videoTrack) {
             alert('Please share your chart screen first.');
             return;
         }
+        if (state.isCapturing) return;
 
-        const imageBase64 = getCroppedBase64();
-        if (!imageBase64) {
-            alert('No chart image was captured. Please select a crop first.');
-            return;
-        }
+        state.isCapturing = true;
+        setButtonDisabled(elements.btnStart, true);
+        setStatus('Analyzing');
+        showOperationProgress('Capturing screenshot');
+        updateOperationProgress(15, 'Grabbing current video frame...');
 
-        state.currentImageBase64 = imageBase64;
-        state.sessionId = 'sess_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
-        state.activeRequestToken++;
-        setButtonDisabled(elements.btnAnalyze, false);
-        setButtonDisabled(elements.btnStopAnalyze, true);
-        setStatus('Ready');
-        updateCropThumbnail();
+        // Yield to the browser so the 0%/15% state actually paints before
+        // the (potentially heavier) frame-grab and encode work runs.
+        requestAnimationFrame(() => {
+            updateOperationProgress(40, 'Encoding cropped frame to JPEG...');
+            getCroppedBase64Async()
+                .then((imageBase64) => {
+                    if (!imageBase64) {
+                        hideOperationProgress();
+                        alert('No chart image was captured. Please select a crop first.');
+                        return;
+                    }
 
-        if (elements.assessmentEmpty) {
-            elements.assessmentEmpty.classList.add('hidden');
-        }
-        if (elements.assessmentDetails) {
-            elements.assessmentDetails.classList.remove('hidden');
-        }
+                    state.currentImageBase64 = imageBase64;
+                    state.sessionId = 'sess_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+                    state.activeRequestToken++;
+                    updateCropThumbnail();
 
-        startProgressLoading('capture', 0, 100);
-        setTimeout(() => {
-            renderCaptureReadyState();
-        }, 900);
-    }
+                    if (elements.assessmentEmpty) {
+                        elements.assessmentEmpty.classList.add('hidden');
+                    }
+                    if (elements.assessmentDetails) {
+                        elements.assessmentDetails.classList.remove('hidden');
+                    }
 
-    function stopProgressLoading() {
-        if (state.progressTimerId) {
-            clearInterval(state.progressTimerId);
-            state.progressTimerId = null;
-        }
-        state.progressStage = null;
-        state.progressPercent = 0;
-    }
+                    updateOperationProgress(100, 'Screenshot captured.');
+                    hideOperationProgress(300);
+                    renderCaptureReadyState();
 
-    function renderProgressState(stage, percent) {
-        const el = elements.forecastSummary || document.getElementById('forecast-summary');
-        if (!el) return;
-
-        const stageLabel = stage === 'capture' ? 'Capturing screenshot' : 'Analyzing chart';
-        const statusText = stage === 'capture'
-            ? 'Preparing a clean crop for the next 5-minute forecast.'
-            : 'Reading the chart pattern, trend, and possible next move.';
-
-        const safePercent = Math.min(100, Math.max(0, Number(percent) || 0));
-        state.progressPercent = safePercent;
-
-        el.innerHTML = `
-            <div class="progress-header">
-                <strong>${stageLabel}</strong>
-                <span>${safePercent}%</span>
-            </div>
-            <div class="progress-track"><span class="progress-fill" style="width: ${safePercent}%"></span></div>
-            <div class="progress-text">${statusText}</div>
-        `;
-    }
-
-    function startProgressLoading(stage, startPercent = 0, maxPercent = 100) {
-        stopProgressLoading();
-        state.progressStage = stage;
-        let current = startPercent;
-        renderProgressState(stage, current);
-
-        const increment = stage === 'capture' ? 10 : 6;
-        state.progressTimerId = setInterval(() => {
-            current += increment;
-            if (current >= maxPercent) {
-                current = maxPercent;
-                renderProgressState(stage, current);
-                clearInterval(state.progressTimerId);
-                state.progressTimerId = null;
-                return;
-            }
-            renderProgressState(stage, current);
-        }, stage === 'capture' ? 180 : 260);
+                    setButtonDisabled(elements.btnAnalyze, false);
+                    setButtonDisabled(elements.btnStopAnalyze, true);
+                    setStatus('Ready');
+                })
+                .catch((err) => {
+                    console.error('Screenshot capture failed:', err);
+                    hideOperationProgress();
+                    setStatus('Error');
+                    alert('Failed to capture the screenshot. Please try again.');
+                })
+                .finally(() => {
+                    state.isCapturing = false;
+                    setButtonDisabled(elements.btnStart, false);
+                });
+        });
     }
 
     function renderCaptureReadyState() {
-        stopProgressLoading();
-
+        if (elements.assetMismatchBanner) elements.assetMismatchBanner.classList.add('hidden');
         const el = elements.forecastSummary || document.getElementById('forecast-summary');
         if (el) {
-            el.innerHTML = '<div class="progress-header"><strong>Screenshot captured</strong><span>100%</span></div><div class="progress-track"><span class="progress-fill" style="width: 100%"></span></div><div class="progress-text">Use Analyze Chart to process the selected crop and forecast the next 5 minutes.</div>';
+            el.innerHTML = 'Screenshot captured. Use <strong>Analyze Chart</strong> to process the selected crop and forecast the next 5 minutes.';
         }
 
         if (elements.signalDirection) {
@@ -738,7 +795,15 @@
         setStatus('Analyzing');
         setButtonDisabled(elements.btnAnalyze, true);
         setButtonDisabled(elements.btnStopAnalyze, false);
-        startProgressLoading('analyze', 15, 92);
+        showOperationProgress('Analyzing chart');
+        updateOperationProgress(12, 'Sending crop to the analysis engine...');
+        state.progressTimerId = setInterval(() => {
+            const next = Math.min(90, (state.progressPercent || 12) + 6);
+            updateOperationProgress(next, 'Reading candles, trend, and patterns...');
+            if (next >= 90) {
+                clearOperationProgressTimer();
+            }
+        }, 260);
         const currentToken = state.activeRequestToken;
         const currentSession = state.sessionId || ('sess_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7));
         const captureUtc = new Date().toISOString();
@@ -778,22 +843,19 @@
             renderLatestAssessment(data);
             renderAnalysisOverlay(data.analysis);
             refreshMetricsAndHistory();
-            stopProgressLoading();
-            renderProgressState('analyze', 100);
-            setTimeout(() => {
-                renderCaptureReadyState();
-            }, 250);
+            updateOperationProgress(100, 'Analysis complete.');
+            hideOperationProgress(300);
             setStatus('Ready');
 
         } catch (err) {
             if (err.name === 'AbortError') {
                 console.log('Chart analysis was stopped by the user.');
-                stopProgressLoading();
+                hideOperationProgress();
                 setStatus('Ready');
                 return;
             }
             console.error('Analysis request failed:', err);
-            stopProgressLoading();
+            hideOperationProgress();
             setStatus('Error');
         } finally {
             state.isAnalyzing = false;
@@ -808,18 +870,91 @@
             state.abortController.abort();
             state.abortController = null;
         }
-        stopProgressLoading();
+        hideOperationProgress();
         state.activeRequestToken++;
         state.isAnalyzing = false;
         setButtonDisabled(elements.btnAnalyze, false);
         setButtonDisabled(elements.btnStopAnalyze, true);
         setStatus('Ready');
-        renderCaptureReadyState();
     }
 
     // -------------------------------------------------------------------------
     // Render Assessment Card
     // -------------------------------------------------------------------------
+
+    // Loosely normalize an asset label for comparison only (not for display):
+    // strips punctuation/whitespace and case so "EUR/USD OTC" and "eur usd otc"
+    // compare equal, while genuinely different tickers still differ.
+    function normalizeAssetLabel(label) {
+        return (label || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    }
+
+    function updateAssetMismatchBanner(typedAsset, detectedAsset) {
+        if (!elements.assetMismatchBanner) return;
+        const hasMismatch = detectedAsset
+            && normalizeAssetLabel(detectedAsset)
+            && normalizeAssetLabel(detectedAsset) !== normalizeAssetLabel(typedAsset);
+
+        if (!hasMismatch) {
+            elements.assetMismatchBanner.classList.add('hidden');
+            return;
+        }
+        if (elements.mismatchTypedAsset) elements.mismatchTypedAsset.textContent = typedAsset || '(blank)';
+        if (elements.mismatchDetectedAsset) elements.mismatchDetectedAsset.textContent = detectedAsset;
+        elements.assetMismatchBanner.dataset.detectedAsset = detectedAsset;
+        elements.assetMismatchBanner.classList.remove('hidden');
+    }
+
+    if (elements.btnUseDetectedAsset) {
+        elements.btnUseDetectedAsset.addEventListener('click', () => {
+            const detected = elements.assetMismatchBanner && elements.assetMismatchBanner.dataset.detectedAsset;
+            if (detected && elements.inputAsset) {
+                elements.inputAsset.value = detected;
+            }
+            elements.assetMismatchBanner.classList.add('hidden');
+        });
+    }
+
+    // Real historical performance for the pattern(s) identified in an
+    // assessment, aggregated from this app's own logged trade outcomes.
+    // Returns null when no pattern names were identified at all.
+    function getPatternHistoryFor(patternNames) {
+        if (!patternNames || patternNames.length === 0) return null;
+        const perf = state.patternPerformance || {};
+        let wins = 0, losses = 0, pnl = 0, matched = [];
+
+        patternNames.forEach((name) => {
+            const stat = perf[name];
+            if (stat) {
+                wins += stat.wins;
+                losses += stat.losses;
+                pnl += stat.pnl;
+                matched.push(name);
+            }
+        });
+
+        const total = wins + losses;
+        return {
+            total,
+            wins,
+            losses,
+            pnl: Math.round(pnl * 100) / 100,
+            winRate: total > 0 ? Math.round((wins / total) * 1000) / 10 : 0,
+            insufficientEvidence: total < 30,
+            matchedPatterns: matched
+        };
+    }
+
+    function renderBacktestLine(history) {
+        if (!history || history.total === 0) {
+            return 'No historical demo trades logged yet for this exact pattern. Log outcomes via "Record Demo Trade" to build a real track record.';
+        }
+        const evidenceNote = history.insufficientEvidence
+            ? ' (sample below 30 trades - not statistically reliable yet)'
+            : '';
+        const pnlStr = (history.pnl >= 0 ? '+' : '') + `$${history.pnl.toFixed(2)}`;
+        return `${history.wins}W / ${history.losses}L across ${history.total} of your logged trades = ${history.winRate}% win rate${evidenceNote}. Net PnL: ${pnlStr}.`;
+    }
 
     function renderAnalysisOverlay(analysis) {
         const thumb = elements.previewThumbnail;
@@ -830,7 +965,7 @@
         ctx.clearRect(0, 0, width, height);
 
         const patternText = (analysis && analysis.candle_pattern) ? analysis.candle_pattern : 'Pattern scan';
-        const direction = (analysis && analysis.predicted_direction) ? analysis.predicted_direction : 'WAIT';
+        const direction = (analysis && analysis.direction) ? analysis.direction : 'WAIT';
         const biasColor = direction === 'UP' ? '#22c55e' : (direction === 'DOWN' ? '#ef4444' : '#f59e0b');
 
         ctx.strokeStyle = biasColor;
@@ -868,7 +1003,7 @@
         }
 
         const a = res.analysis;
-        const predictedDirection = (a.predicted_direction || a.direction || 'WAIT');
+        const predictedDirection = a.direction || 'WAIT';
         const dirBadge = elements.signalDirection;
         dirBadge.className = 'direction-badge';
         dirBadge.textContent = predictedDirection;
@@ -876,6 +1011,10 @@
         if (predictedDirection === 'UP') dirBadge.classList.add('direction-up');
         else if (predictedDirection === 'DOWN') dirBadge.classList.add('direction-down');
         else dirBadge.classList.add('direction-wait');
+
+        const patternNames = (a.patterns || []).map((p) => p.name).filter(Boolean);
+        const history = getPatternHistoryFor(patternNames);
+        updateAssetMismatchBanner(res.asset, a.currency_pair);
 
         elements.metaAsset.textContent = a.currency_pair || res.asset;
         elements.metaTimeframe.textContent = res.timeframe;
@@ -885,13 +1024,18 @@
         elements.metaTimeIst.textContent = formatToIST(res.capture_timestamp);
         elements.metaTradeHorizon.textContent = a.trade_horizon || elements.inputTradeHorizon.value;
         elements.metaForecast.textContent = predictedDirection;
-        elements.metaConfidence.textContent = `${Math.round((a.confidence_score || 0) * 100)}%`;
+        elements.metaConfidence.textContent = (!history || history.total === 0)
+            ? 'No logged trades yet'
+            : `${history.winRate}% (${history.wins}W/${history.losses}L, n=${history.total})${history.insufficientEvidence ? ' - thin sample' : ''}`;
         elements.metaPattern.textContent = a.candle_pattern || 'Not classified';
 
+        const outlookText = a.next_5_min_outlook
+            || (res.is_mock ? 'Not generated in Mock Mode - enable live analysis for real AI reasoning.' : 'No outlook provided by the model.');
+
         elements.forecastSummary.innerHTML = `
-            <strong>Prediction:</strong> ${predictedDirection}<br>
-            <strong>5-minute outlook:</strong> ${a.next_5_min_outlook || 'No next-5-minute forecast available.'}<br>
-            <strong>Backtest:</strong> ${a.backtest_summary || 'No similar-pattern backtest summary available.'}
+            <strong>AI Read:</strong> ${predictedDirection}<br>
+            <strong>Next 5-minute outlook:</strong> ${outlookText}<br>
+            <strong>Real backtest (your logged trades):</strong> ${renderBacktestLine(history)}
         `;
 
         // Patterns
